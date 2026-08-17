@@ -212,6 +212,15 @@ abstract class TextAct(override val title: String, override val subtitle: String
   abstract fun prepare(dir: File)
 
   abstract fun run(dir: File, sink: TextSink)
+
+  /**
+   * Cut the act short because the reel's clock ran out.
+   *
+   * Without this a generation the reel has already left keeps running: it competes with the next
+   * act for the same cores, and the cycle after finds the model still busy. The visible symptom is
+   * a token rate that gets worse every lap.
+   */
+  open fun cancel() {}
 }
 
 /**
@@ -224,6 +233,10 @@ class Chat :
     TextAct("Text generation", "Qwen3.5-0.8B · 8da4w · XNNPACK") {
 
   @Volatile private var llm: LlmModule? = null
+
+  override fun cancel() {
+    llm?.stop()
+  }
 
   override fun prepare(dir: File) {
     val model = File(dir, "model.pte")
@@ -260,7 +273,7 @@ class Chat :
       val turn = "<|im_start|>user\n$PROMPT<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
       llm.generate(
           turn,
-          LlmGenerationConfig.create().maxNewTokens(80).temperature(0.7f).echo(false).build(),
+          LlmGenerationConfig.create().maxNewTokens(64).temperature(0.7f).echo(false).build(),
           object : LlmCallback {
             override fun onResult(result: String) {
               // A short reply can arrive in one chunk that ends with the stop marker, so strip it

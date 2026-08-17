@@ -42,6 +42,9 @@ private const val VISION_SECONDS = 7
 /** A text act that never finishes still has to hand the screen back. */
 private const val TEXT_TIMEOUT_SECONDS = 40
 
+/** How often the clip behind a text act is allowed to advance. */
+private const val BACKDROP_INTERVAL_MS = 150L
+
 /**
  * A full-screen reel: one model at a time, filling the frame, advancing on its own.
  *
@@ -172,6 +175,9 @@ class MainActivity : AppCompatActivity() {
     if (current is TextAct) {
       // Text acts have nothing of their own to show, and a black screen for the length of a
       // generation is dead air. The clip keeps playing behind the words, dimmed by the scrim.
+      // Decoding it flat out would take CPU from the generation it is a backdrop for, and the
+      // token rate on screen is the number being demonstrated, so the backdrop is rate-limited.
+      Thread.sleep(BACKDROP_INTERVAL_MS)
       val bitmap = source.frame()
       if (bitmap != null) {
         val plain = bitmap.copy(Bitmap.Config.ARGB_8888, false)
@@ -354,6 +360,7 @@ class MainActivity : AppCompatActivity() {
     if (advanced) return
     advanced = true
     clock.removeCallbacksAndMessages(null)
+    (act as? TextAct)?.cancel()
     enterAct((actIndex + 1) % acts.size)
   }
 
