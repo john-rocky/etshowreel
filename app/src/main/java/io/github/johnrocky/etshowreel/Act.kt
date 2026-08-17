@@ -37,6 +37,17 @@ sealed interface Act {
   val title: String
 
   val subtitle: String
+
+  /**
+   * Where in `scene.mp4` this act starts playing, in seconds.
+   *
+   * The bundled clip is a street followed by a portrait, and which model wants which is not a
+   * matter of taste: MODNet cuts a person out of a background, and pointed at an empty pavement it
+   * correctly reports no foreground at all. Letting every act start from the same clock leaves that
+   * to how the reel's cycle happens to divide into the clip's length.
+   */
+  val sceneOffsetSeconds: Int
+    get() = 0
 }
 
 // ─── vision ───────────────────────────────────────────────────────────────────
@@ -59,6 +70,7 @@ abstract class VisionAct(
     override val subtitle: String,
     val file: String,
     val config: ImageProcessorConfig,
+    override val sceneOffsetSeconds: Int = 0,
 ) : Act {
   abstract fun render(outputs: Array<EValue>, source: Bitmap, mapper: CoordinateMapper): Frame
 
@@ -121,6 +133,7 @@ class Depth :
             targetHeight = 518,
             normalization = Normalization.imagenet(),
         ),
+        sceneOffsetSeconds = 8,
     ) {
   private val decoder = DepthDecoder()
 
@@ -147,6 +160,8 @@ class Matte :
                     floatArrayOf(0.5f, 0.5f, 0.5f),
                 ),
         ),
+        // The portrait half of the clip; a matting model on an empty street has nothing to cut out.
+        sceneOffsetSeconds = 21,
     ) {
   // The head already emits probabilities, so no second sigmoid.
   private val decoder = SegmentationDecoder(applySigmoid = false)
@@ -169,6 +184,7 @@ class Segment :
             targetHeight = 1024,
             normalization = Normalization.imagenet(),
         ),
+        sceneOffsetSeconds = 4,
     ) {
   private val decoder = MultiClassSegmentationDecoder(numClasses = CITYSCAPES_LABELS.size)
 

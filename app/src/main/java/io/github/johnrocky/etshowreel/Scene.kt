@@ -26,22 +26,24 @@ class Scene(file: File) : AutoCloseable {
               .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
               ?.toLongOrNull() ?: 0L) * 1000L
 
-  private val startedAt = System.nanoTime()
-
   val isUsable: Boolean
     get() = durationUs > 0
 
   /**
-   * The frame that belongs at the current moment.
+   * The frame [elapsedUs] into the clip, counted from [fromUs] and wrapping at the end.
+   *
+   * The caller decides where in the clip to start rather than the clip playing on one clock, so an
+   * act can be given the stretch of footage that suits it: a street for the detector, a portrait
+   * for the matting model. Otherwise which act sees which scene is down to how the reel's cycle
+   * happens to line up with the clip's length.
    *
    * `OPTION_CLOSEST` decodes to the exact position rather than snapping to the nearest keyframe,
    * which for a short clip is the difference between motion and a slideshow.
    */
-  fun frame(): Bitmap? {
+  fun frame(fromUs: Long, elapsedUs: Long): Bitmap? {
     if (durationUs <= 0) return null
-    val elapsedUs = (System.nanoTime() - startedAt) / 1000
     return retriever.getFrameAtTime(
-        elapsedUs % durationUs,
+        (fromUs + elapsedUs) % durationUs,
         MediaMetadataRetriever.OPTION_CLOSEST,
     )
   }

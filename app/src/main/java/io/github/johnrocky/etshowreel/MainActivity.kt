@@ -73,6 +73,8 @@ class MainActivity : AppCompatActivity() {
   @Volatile private var actIndex = 0
   /** Guards against a finished text act and the timeout both advancing the reel. */
   @Volatile private var advanced = false
+  /** When the current act started, so the clip plays from that act's own offset. */
+  @Volatile private var actStartedAt = 0L
 
   // Owned by [worker]: loading and inference happen on one thread so a swap can never land while
   // forward() is running, which the runtime refuses outright.
@@ -174,7 +176,7 @@ class MainActivity : AppCompatActivity() {
       // Decoding it flat out would take CPU from the generation it is a backdrop for, and the
       // token rate on screen is the number being demonstrated, so the backdrop is rate-limited.
       Thread.sleep(BACKDROP_INTERVAL_MS)
-      val bitmap = source.frame()
+      val bitmap = sceneFrame(source, current)
       if (bitmap != null) {
         val plain = bitmap.copy(Bitmap.Config.ARGB_8888, false)
         bitmap.recycle()
@@ -183,7 +185,7 @@ class MainActivity : AppCompatActivity() {
       }
     } else if (current is VisionAct && model != null && processor != null) {
       try {
-        val bitmap = source.frame()
+        val bitmap = sceneFrame(source, current)
         if (bitmap != null) {
           val upright = bitmap.copy(Bitmap.Config.ARGB_8888, false)
           bitmap.recycle()
@@ -235,6 +237,7 @@ class MainActivity : AppCompatActivity() {
   private fun enterAct(index: Int) {
     actIndex = index
     advanced = false
+    actStartedAt = System.nanoTime()
 
     val current = act
     titleView.text = current.title
@@ -266,6 +269,12 @@ class MainActivity : AppCompatActivity() {
     val hold = if (current is VisionAct) VISION_SECONDS else TEXT_TIMEOUT_SECONDS
     clock.postDelayed({ advance() }, hold * 1000L)
   }
+
+  private fun sceneFrame(source: Scene, current: Act) =
+      source.frame(
+          current.sceneOffsetSeconds * 1_000_000L,
+          (System.nanoTime() - actStartedAt) / 1000,
+      )
 
   private fun swapModel(current: Act) {
     module?.destroy()
