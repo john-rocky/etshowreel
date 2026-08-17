@@ -21,6 +21,7 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
 import io.github.johnrocky.etvision.android.rgbaToBitmap
+import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
@@ -55,6 +56,7 @@ private const val TEXT_TIMEOUT_SECONDS = 40
 class MainActivity : AppCompatActivity() {
 
   private lateinit var output: ImageView
+  private lateinit var scrim: android.view.View
   private lateinit var bodyView: TextView
   private lateinit var titleView: TextView
   private lateinit var subtitleView: TextView
@@ -73,6 +75,7 @@ class MainActivity : AppCompatActivity() {
   // forward() is running, which the runtime refuses outright.
   private var module: Module? = null
   private var processor: ImageProcessor? = null
+  private var scene: Scene? = null
 
   private val act: Act
     get() = acts[actIndex]
@@ -85,7 +88,7 @@ class MainActivity : AppCompatActivity() {
         PackageManager.PERMISSION_GRANTED) {
       ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1)
     } else {
-      startCamera()
+      startFrames()
     }
   }
 
@@ -95,7 +98,7 @@ class MainActivity : AppCompatActivity() {
       grantResults: IntArray,
   ) {
     super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-    if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) startCamera()
+    if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) startFrames()
   }
 
   override fun onDestroy() {
@@ -103,6 +106,31 @@ class MainActivity : AppCompatActivity() {
     worker.shutdown()
     module?.destroy()
     processor?.close()
+    scene?.close()
+  }
+
+  /**
+   * Starts whichever frame source is available: a `scene.mp4` dropped next to the models if there
+   * is one, the camera otherwise. A clip makes a recording reproducible; the camera is the point of
+   * the app.
+   */
+  private fun startFrames() {
+    val dir = getExternalFilesDir(null)
+    val clip = dir?.let { File(it, "scene.mp4") }
+    if (clip != null && clip.exists()) {
+      val loaded = Scene(clip)
+      if (loaded.isUsable) {
+        scene = loaded
+        Log.i(TAG, "playing ${clip.name} in place of the camera")
+        preloadTextActs()
+        enterAct(0)
+        worker.execute { playScene() }
+        return
+      }
+      loaded.close()
+      Log.w(TAG, "${clip.name} declared no duration; falling back to the camera")
+    }
+    startCamera()
   }
 
   private fun startCamera() {
@@ -123,6 +151,49 @@ class MainActivity : AppCompatActivity() {
         },
         mainExecutor,
     )
+  }
+
+  /**
+   * Feeds the vision acts from the clip, one frame per inference, re-queuing itself so the work
+   * stays on the same thread that owns the modules.
+   */
+  private fun playScene() {
+    val source = scene ?: return
+    val current = act
+    val model = module
+    val processor = this.processor
+    if (current is TextAct) {
+      // Text acts have nothing of their own to show, and a black screen for the length of a
+      // generation is dead air. The clip keeps playing behind the words, dimmed by the scrim.
+      val bitmap = source.frame()
+      if (bitmap != null) {
+        val plain = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+        bitmap.recycle()
+        runOnUiThread { if (act === current) output.setImageBitmap(plain) }
+      }
+    } else if (current is VisionAct && model != null && processor != null) {
+      try {
+        val bitmap = source.frame()
+        if (bitmap != null) {
+          val upright = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+          bitmap.recycle()
+          val input = processor.process(upright)
+          val runStart = System.nanoTime()
+          val outputs = model.forward(EValue.from(input))
+          val runMs = (System.nanoTime() - runStart) / 1e6
+          val frame = current.render(outputs, upright, current.mapperFor(upright))
+          runOnUiThread {
+            if (act === current) {
+              output.setImageBitmap(frame.bitmap)
+              statsView.text = "%.0f ms  ·  %s".format(runMs, frame.detail)
+            }
+          }
+        }
+      } catch (e: Throwable) {
+        Log.e(TAG, "scene frame failed on ${current.title}", e)
+      }
+    }
+    if (!worker.isShutdown) worker.execute { playScene() }
   }
 
   // ─── reel ───────────────────────────────────────────────────────────────────
@@ -154,10 +225,18 @@ class MainActivity : AppCompatActivity() {
     titleView.text = current.title
     subtitleView.text = current.subtitle
     statsView.text = ""
-    output.visibility = if (current is VisionAct) android.view.View.VISIBLE else android.view.View.GONE
+    scrim.visibility = if (current is TextAct) android.view.View.VISIBLE else android.view.View.GONE
     bodyView.visibility = if (current is TextAct) android.view.View.VISIBLE else android.view.View.GONE
     if (current is TextAct) bodyView.text = ""
     Log.i(TAG, "act ${current.title}")
+
+    // Until the incoming model produces something, the screen would otherwise keep the outgoing
+    // model's overlay under the new act's title, which reads as the reel showing the wrong answer.
+    if (current is VisionAct) {
+      output.setImageDrawable(null)
+      statsView.text = "loading ${current.file}…"
+      worker.execute { showPlainFrame(current) }
+    }
 
     // The swap is queued behind whatever frame is in flight; doing it here would tear the module
     // out from under a running forward().
@@ -171,6 +250,14 @@ class MainActivity : AppCompatActivity() {
     clock.postDelayed({ advance() }, hold * 1000L)
   }
 
+  /** Puts the source frame up bare while the act's model is still being mapped. */
+  private fun showPlainFrame(current: VisionAct) {
+    val bitmap = scene?.frame() ?: return
+    val upright = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+    bitmap.recycle()
+    runOnUiThread { if (act === current) output.setImageBitmap(upright) }
+  }
+
   private fun swapModel(current: Act) {
     module?.destroy()
     module = null
@@ -182,7 +269,7 @@ class MainActivity : AppCompatActivity() {
     processor = ImageProcessor(current.config)
     val loaded = module != null
     runOnUiThread {
-      if (act === current) statsView.text = if (loaded) "warming up" else "${current.file} not pushed"
+      if (act === current) statsView.text = if (loaded) "running…" else "${current.file} not pushed"
     }
   }
 
@@ -355,6 +442,13 @@ class MainActivity : AppCompatActivity() {
         }
     root.addView(output)
 
+    scrim =
+        android.view.View(this).apply {
+          setBackgroundColor(0xD0000000.toInt())
+          visibility = android.view.View.GONE
+          layoutParams = fill
+        }
+
     // Text acts get the same full frame the camera acts get. Bottom gravity means the first
     // tokens land just above the caption and the block grows upward, which reads better than
     // text crawling down from the top of an empty screen. The bottom padding has to clear the
@@ -369,6 +463,7 @@ class MainActivity : AppCompatActivity() {
           visibility = android.view.View.GONE
           layoutParams = fill
         }
+    root.addView(scrim)
     root.addView(bodyView)
 
     val caption =

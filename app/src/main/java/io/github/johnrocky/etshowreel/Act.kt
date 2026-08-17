@@ -260,13 +260,16 @@ class Chat :
       val turn = "<|im_start|>user\n$PROMPT<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
       llm.generate(
           turn,
-          LlmGenerationConfig.create().maxNewTokens(120).temperature(0.7f).echo(false).build(),
+          LlmGenerationConfig.create().maxNewTokens(80).temperature(0.7f).echo(false).build(),
           object : LlmCallback {
             override fun onResult(result: String) {
               // A short reply can arrive in one chunk that ends with the stop marker, so strip it
               // rather than dropping the chunk and losing the answer with it.
               reply.append(result.substringBefore("<|im_end|>"))
-              sink.body("$PROMPT\n\n${reply.toString().trimStart()}")
+              // The model marks emphasis in Markdown, which on a plain TextView is just stray
+              // asterisks in the middle of the answer.
+              val answer = reply.toString().replace("*", "").trimStart()
+              sink.body("$PROMPT\n\n$answer")
               sink.stats("generating…")
             }
 
@@ -333,11 +336,15 @@ class Listen : TextAct("Speech recognition", "Whisper · XNNPACK") {
       val start = System.nanoTime()
       asr.transcribe(
           wav,
-          AsrTranscribeConfig(maxNewTokens = 96, temperature = 0f),
+          AsrTranscribeConfig(
+              maxNewTokens = 96,
+              temperature = 0f,
+              decoderStartTokenId = START_OF_TRANSCRIPT,
+          ),
           object : AsrCallback {
             override fun onToken(token: String) {
               transcript.append(token)
-              sink.body(transcript.toString().trim())
+              sink.body(SPECIAL.replace(transcript, "").trim())
               sink.stats("%.1f s of audio · transcribing…".format(AUDIO_SECONDS))
             }
 
@@ -346,6 +353,7 @@ class Listen : TextAct("Speech recognition", "Whisper · XNNPACK") {
           },
       )
       sink.stats("%.0f ms for %.1f s of speech".format((System.nanoTime() - start) / 1e6, AUDIO_SECONDS))
+      android.util.Log.i("ETShowreel", "transcript: ${SPECIAL.replace(transcript, "").trim()}")
     } finally {
       sink.done()
     }
@@ -354,6 +362,17 @@ class Listen : TextAct("Speech recognition", "Whisper · XNNPACK") {
   private companion object {
     /** Length of the bundled clip, used only for the caption. */
     const val AUDIO_SECONDS = 8.0
+
+    /**
+     * Whisper's `<|startoftranscript|>`. The runner takes the first decoder token from the config
+     * and does not fall back to the model's own `decoder_start_token_id` method, so leaving this at
+     * the default 0 starts decoding from `!` and the model answers with a confused mixture of
+     * language and task tokens rather than a transcript.
+     */
+    const val START_OF_TRANSCRIPT = 50258L
+
+    /** The language and task markers are part of the protocol, not part of what was said. */
+    val SPECIAL = Regex("<\\|[^|]*\\|>")
   }
 }
 
