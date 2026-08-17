@@ -76,16 +76,12 @@ class MainActivity : AppCompatActivity() {
 
   // Owned by [worker]: loading and inference happen on one thread so a swap can never land while
   // forward() is running, which the runtime refuses outright.
-  private val modules = mutableMapOf<VisionAct, Module>()
   private var module: Module? = null
   private var processor: ImageProcessor? = null
   private var scene: Scene? = null
 
   /** The most recent source frame with nothing drawn on it, for the moment an act changes. */
   @Volatile private var plainFrame: Bitmap? = null
-
-  /** Held so the warm-up buffers outlive the inference that still points at them. */
-  private val warmupInputs = mutableListOf<org.pytorch.executorch.Tensor>()
 
   private val act: Act
     get() = acts[actIndex]
@@ -114,7 +110,7 @@ class MainActivity : AppCompatActivity() {
   override fun onDestroy() {
     super.onDestroy()
     worker.shutdown()
-    modules.values.forEach { it.destroy() }
+    module?.destroy()
     processor?.close()
     scene?.close()
   }
@@ -214,34 +210,15 @@ class MainActivity : AppCompatActivity() {
   // ─── reel ───────────────────────────────────────────────────────────────────
 
   /**
-   * Opens every model up front rather than when its act arrives.
+   * Opens the LLM and Whisper up front, while the camera acts play.
    *
-   * Loading is the long pole here, not inference: a vision model takes about three seconds to map
-   * and initialize against a seven-second act, and the LLM's 620 MB takes longer still. Loading on
-   * arrival spent most of the reel showing "loading". They all stay open for the session instead.
-   *
-   * The vision models go on [worker] because that thread owns them; the two text models are opened
-   * on their own thread so the reel's first frames are not stuck behind 850 MB of weights.
+   * The vision models are deliberately not preloaded. XNNPACK's Android preset shares one global
+   * workspace across every delegate instance, so holding four of them open and running them in
+   * turn faults: whichever model ran before the workspace was resized writes past its end. One
+   * vision model at a time is the arrangement that survives.
    */
   private fun preload() {
     val dir = getExternalFilesDir(null) ?: return
-    for (a in acts.filterIsInstance<VisionAct>()) {
-      worker.execute {
-        val start = System.nanoTime()
-        val m = a.load(dir)
-        if (m == null) {
-          Log.w(TAG, "${a.file} not pushed")
-        } else {
-          // Opening a .pte is an mmap and costs almost nothing; the delay is in the first
-          // forward(), where XNNPACK builds its plan. Paying that here with a zero frame is what
-          // actually removes the pause at the start of each act.
-          m.forward(EValue.from(blankInput(a)))
-          modules[a] = m
-          if (act === a) module = m
-          Log.i(TAG, "warmed ${a.file} in %.0f ms".format((System.nanoTime() - start) / 1e6))
-        }
-      }
-    }
     thread(name = "preload-text") {
       for (a in acts.filterIsInstance<TextAct>()) {
         val start = System.nanoTime()
@@ -290,32 +267,14 @@ class MainActivity : AppCompatActivity() {
     clock.postDelayed({ advance() }, hold * 1000L)
   }
 
-  /**
-   * A zero frame shaped the way an act's model expects, used only to force the first plan build.
-   *
-   * The buffer is direct and kept for the life of the activity on purpose: a method holds a pointer
-   * to whatever it was last given, so a warm-up input allocated on the Java heap is a pointer into
-   * memory the collector is free to move, and the next real inference faults on it.
-   */
-  private fun blankInput(a: VisionAct): org.pytorch.executorch.Tensor {
-    val numel = 3 * a.config.targetHeight * a.config.targetWidth
-    val tensor =
-        org.pytorch.executorch.Tensor.fromBlob(
-            org.pytorch.executorch.Tensor.allocateFloatBuffer(numel),
-            longArrayOf(1, 3, a.config.targetHeight.toLong(), a.config.targetWidth.toLong()),
-        )
-    warmupInputs += tensor
-    return tensor
-  }
-
   private fun swapModel(current: Act) {
+    module?.destroy()
+    module = null
     processor?.close()
     processor = null
-    if (current !is VisionAct) {
-      module = null
-      return
-    }
-    module = modules[current]
+    if (current !is VisionAct) return
+    val dir = getExternalFilesDir(null) ?: return
+    module = current.load(dir)
     processor = ImageProcessor(current.config)
     val loaded = module != null
     runOnUiThread {
