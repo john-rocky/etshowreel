@@ -91,6 +91,11 @@ class MainActivity : AppCompatActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    // Module, LlmModule and AsrModule each start with `if (!NativeLoader.isInitialized())
+    // NativeLoader.init(...)`, which is a check and then an act with nothing between them. Opening
+    // a vision model and the LLM on two threads at once loses that race and throws
+    // "Cannot re-initialize NativeLoader". Getting the runtime here does it once, on one thread.
+    org.pytorch.executorch.ExecuTorchRuntime.getRuntime()
     buildUi()
     if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) !=
         PackageManager.PERMISSION_GRANTED) {
@@ -270,11 +275,13 @@ class MainActivity : AppCompatActivity() {
     clock.postDelayed({ advance() }, hold * 1000L)
   }
 
-  private fun sceneFrame(source: Scene, current: Act) =
-      source.frame(
-          current.sceneOffsetSeconds * 1_000_000L,
-          (System.nanoTime() - actStartedAt) / 1000,
-      )
+  private fun sceneFrame(source: Scene, current: Act): Bitmap? {
+    val from = current.sceneOffsetSeconds * 1_000_000L
+    val elapsed = (System.nanoTime() - actStartedAt) / 1000
+    val frame = source.frame(from, elapsed)
+    if (frame == null) Log.w(TAG, "no frame at ${(from + elapsed) / 1000} ms for ${current.title}")
+    return frame
+  }
 
   private fun swapModel(current: Act) {
     module?.destroy()
