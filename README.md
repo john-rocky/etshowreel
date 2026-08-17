@@ -61,6 +61,22 @@ adb shell "chmod 666 $D/*"
 An act whose file is missing says so on screen and the reel moves on, so a subset
 works fine.
 
+### Recording it
+
+A recording made on live frames shows whatever the lens happened to be pointed
+at. Drop a `scene.mp4` in the same directory and the reel plays that instead of
+the camera, so the same run produces the same frames every time:
+
+```bash
+adb push scene.mp4 $D/scene.mp4
+```
+
+Each act names its own start offset into the clip (`sceneOffsetSeconds` in
+`Act.kt`), because which model wants which footage is not a matter of taste —
+MODNet pointed at an empty pavement correctly reports no foreground at all. The
+bundled clip used for the demo is a 21-second pan across a street followed by
+7 seconds of a portrait; the matting act starts at 21.
+
 The Whisper pair comes from
 [Optimum-ExecuTorch](https://github.com/huggingface/optimum-executorch), which
 produces the single `.pte` exposing `encoder` and `text_decoder` that `AsrModule`
@@ -86,7 +102,18 @@ upstream in
 
 **Loading is the long pole, not inference.** 620 MB of LLM weights and 230 MB of
 Whisper take long enough to open that the reel maps both on a background thread at
-startup, behind the camera acts. Inference itself is tens of milliseconds a frame.
+startup, behind the camera acts.
+
+**Only one vision model stays open at a time.** XNNPACK's Android preset turns on
+the shared workspace, so every delegate instance across every model uses one
+arena. Holding four open and running them in turn faults: whichever model
+initialized before a larger one grew the arena writes past its end, and the crash
+lands in the inference rather than at the resize that caused it.
+
+**The native loader is initialized once, on the main thread.** `Module`,
+`LlmModule` and `AsrModule` each start with "if not initialized, then
+initialize", with nothing between the check and the act. Opening a vision model
+on one thread while the LLM opens on another loses that race and throws.
 
 ## Licence
 
