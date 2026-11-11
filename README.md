@@ -35,7 +35,7 @@ The app needs a 64-bit phone on Android 9 or later, and it asks for the camera w
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-The `.pte` files come from [executorch-models](https://github.com/john-rocky/executorch-samples/tree/main/executorch-models), which links each model's Hugging Face repository. The Whisper files come from [Optimum-ExecuTorch](https://github.com/huggingface/optimum-executorch), which produces the single `.pte` with `encoder` and `text_decoder` that `AsrModule` requires. Run these with `optimum-cli` installed and an ExecuTorch checkout in the current folder:
+The `.pte` files come from [executorch-models](https://github.com/john-rocky/executorch-samples/tree/main/executorch-models), which links each model's Hugging Face repository. The Qwen file was replaced with a new export on 2026-08-21, four days after this app's last code change. The earlier build (651 MB) is still at revision [`e8e1825`](https://huggingface.co/mlboydaisuke/Qwen3.5-0.8B-ExecuTorch/tree/e8e182500048469870be967531bfbab0873aa214). The Whisper files come from [Optimum-ExecuTorch](https://github.com/huggingface/optimum-executorch), which produces the single `.pte` with `encoder` and `text_decoder` that `AsrModule` requires. Run these with `optimum-cli` installed and an ExecuTorch checkout in the current folder:
 
 ```bash
 optimum-cli export executorch --model openai/whisper-tiny \
@@ -44,7 +44,7 @@ python executorch/extension/audio/mel_spectrogram.py \
     --output_file whisper/preprocess.pte --feature_size 80 --max_audio_len 60
 ```
 
-The Qwen `.pte` repository on Hugging Face has no `tokenizer.json`, and `optimum-cli` doesn't write one for Whisper, so bring the ones for Qwen3.5 0.8B and Whisper-tiny. `speech.wav` is a 16 kHz mono WAV, 16-bit or 32-bit. The caption always says 8.0 s, the length of my clip. Push them all into the app's external files directory, under these names:
+The Qwen `.pte` repository on Hugging Face has no `tokenizer.json`, and `optimum-cli` doesn't write one for Whisper, so bring the ones for Qwen3.5 0.8B and Whisper-tiny. `speech.wav` is a 16 kHz mono WAV, 16-bit or 32-bit. The caption always says 8.0 s, the length of my WAV. Push them all into the app's external files directory, under these names:
 
 ```bash
 D=/sdcard/Android/data/io.github.johnrocky.etshowreel/files
@@ -77,11 +77,11 @@ Each act starts at its own offset in the clip (`sceneOffsetSeconds` in `Act.kt`)
 
 **The chroma plane is one byte short.** CameraX's `planes[1]` and `planes[2]` are views one byte apart into the same interleaved allocation, so whichever one you pass ends before its last chroma pair. A bounds check derived from `uvStride * (height / 2 - 1) + width` rejects every real frame. The fix went into ExecuTorch with [#21830](https://github.com/pytorch/executorch/pull/21830).
 
-**Loading the large models is slow.** The LLM is 647 MB and Whisper 230 MB. The app creates both modules on a background thread at startup, while the camera acts run, and each loads its weights the first time it is used.
+**The text models load on first use.** The LLM is 647 MB and Whisper 230 MB. The app creates both modules on a background thread at startup, while the camera acts run, and each loads its weights the first time it is used.
 
-**Only one vision model stays open at a time.** XNNPACK's Android preset turns on the shared workspace, so every delegate instance across every model uses one arena. When I held four open and ran them in turn, the app crashed. A model that initialized before a larger one grew the arena writes past the arena's end, and the crash comes later, during inference.
+**Only one vision model stays open at a time.** ExecuTorch's Android build preset turns on XNNPACK's shared workspace, so every delegate instance across every model uses one arena. When I held four open and ran them in turn, the app crashed. A model that initialized before a larger one grew the arena writes past the arena's end, and the crash comes later, during inference.
 
-**The native loader is initialized once, on the main thread.** ExecuTorch's classes check whether the native library is initialized and then initialize it, with no lock. Opening a vision model on one thread while the LLM opened on another lost that race and threw.
+**The native loader is initialized once, on the main thread.** ExecuTorch's classes check whether the native loader is initialized and then initialize it, with no lock. Opening a vision model on one thread while the LLM opened on another lost that race and threw.
 
 ## Licence
 
